@@ -10,7 +10,12 @@ if __name__ == "__main__":
     parser.add_argument('--pdf_path', type=str, help='Path to the PDF file')
     parser.add_argument('--md_path', type=str, help='Path to the Markdown file')
 
-    parser.add_argument('--model', type=str, default='gpt-4o-2024-11-20', help='Model to use')
+    parser.add_argument('--model', type=str, default=None, help='Model to use (default: gpt-4o-2024-11-20 for OpenAI, gpt-4o-mini for OpenRouter)')
+    
+    parser.add_argument('--use-openrouter', type=str, default='no', 
+                      help='Whether to use OpenRouter (yes/no, default: no)')
+    parser.add_argument('--enable-token-tracking', type=str, default='no',
+                      help='Whether to enable token tracking (yes/no, default: no)')
 
     parser.add_argument('--toc-check-pages', type=int, default=20, 
                       help='Number of pages to check for table of contents (PDF only)')
@@ -37,6 +42,36 @@ if __name__ == "__main__":
                       help='Token threshold for generating summaries (markdown only)')
     args = parser.parse_args()
     
+    # Configure global settings
+    use_openrouter = args.use_openrouter.lower() == 'yes'
+    enable_token_tracking = args.enable_token_tracking.lower() == 'yes'
+    
+    # Configure API settings
+    if use_openrouter:
+        api_key = os.getenv("OPENROUTER_API_KEY")
+        base_url = "https://openrouter.ai/api/v1"
+    else:
+        api_key = os.getenv("CHATGPT_API_KEY")
+        base_url = None # Default OpenAI
+    
+    
+    # Configure TokenTracker
+    reset_global_tracker()
+    if enable_token_tracking:
+        get_global_tracker().enable()
+    else:
+        # Explicitly disable (default is False in init but good to be explicit/safe)
+        get_global_tracker().disable()
+        
+    # Determine model
+    if args.model:
+        model_name = args.model
+    else:
+        if use_openrouter:
+            model_name = 'gpt-4o-mini'
+        else:
+            model_name = 'gpt-4o-2024-11-20'
+    
     # Validate that exactly one file type is specified
     if not args.pdf_path and not args.md_path:
         raise ValueError("Either --pdf_path or --md_path must be specified")
@@ -53,14 +88,16 @@ if __name__ == "__main__":
         # Process PDF file
         # Configure options
         opt = config(
-            model=args.model,
+            model=model_name,
             toc_check_page_num=args.toc_check_pages,
             max_page_num_each_node=args.max_pages_per_node,
             max_token_num_each_node=args.max_tokens_per_node,
             if_add_node_id=args.if_add_node_id,
             if_add_node_summary=args.if_add_node_summary,
             if_add_doc_description=args.if_add_doc_description,
-            if_add_node_text=args.if_add_node_text
+            if_add_node_text=args.if_add_node_text,
+            api_key=api_key,
+            base_url=base_url
         )
 
         # Process the PDF
@@ -77,6 +114,9 @@ if __name__ == "__main__":
             json.dump(toc_with_page_number, f, indent=2)
         
         print(f'Tree structure saved to: {output_file}')
+        
+        # Print token usage summary
+        get_global_tracker().print_summary()
             
     elif args.md_path:
         # Validate Markdown file
@@ -97,11 +137,13 @@ if __name__ == "__main__":
         
         # Create options dict with user args
         user_opt = {
-            'model': args.model,
+            'model': model_name,
             'if_add_node_summary': args.if_add_node_summary,
             'if_add_doc_description': args.if_add_doc_description,
             'if_add_node_text': args.if_add_node_text,
-            'if_add_node_id': args.if_add_node_id
+            'if_add_node_id': args.if_add_node_id,
+            'api_key': api_key,
+            'base_url': base_url
         }
         
         # Load config with defaults from config.yaml
@@ -116,7 +158,9 @@ if __name__ == "__main__":
             model=opt.model,
             if_add_doc_description=opt.if_add_doc_description,
             if_add_node_text=opt.if_add_node_text,
-            if_add_node_id=opt.if_add_node_id
+            if_add_node_id=opt.if_add_node_id,
+            api_key=opt.api_key,
+            base_url=opt.base_url
         ))
         
         print('Parsing done, saving to file...')
@@ -131,3 +175,6 @@ if __name__ == "__main__":
             json.dump(toc_with_page_number, f, indent=2, ensure_ascii=False)
         
         print(f'Tree structure saved to: {output_file}')
+        
+        # Print token usage summary
+        get_global_tracker().print_summary()

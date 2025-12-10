@@ -1,5 +1,5 @@
 import tiktoken
-import openai
+from openai import OpenAI, AsyncOpenAI
 import logging
 import os
 from datetime import datetime
@@ -12,11 +12,15 @@ import pymupdf
 from io import BytesIO
 from dotenv import load_dotenv
 load_dotenv()
+from .token_tracker import get_global_tracker
 import logging
 import yaml
 from pathlib import Path
 from types import SimpleNamespace as config
 
+
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 CHATGPT_API_KEY = os.getenv("CHATGPT_API_KEY")
 
 def count_tokens(text, model=None):
@@ -26,9 +30,17 @@ def count_tokens(text, model=None):
     tokens = enc.encode(text)
     return len(tokens)
 
-def ChatGPT_API_with_finish_reason(model, prompt, api_key=CHATGPT_API_KEY, chat_history=None):
+def ChatGPT_API_with_finish_reason(model, prompt, api_key=None, base_url=None, chat_history=None):
     max_retries = 10
-    client = openai.OpenAI(api_key=api_key)
+    
+    # Default to OpenAI if not specified
+    client_api_key = api_key or CHATGPT_API_KEY
+    client_base_url = base_url
+
+    client = OpenAI(
+        api_key=client_api_key,
+        base_url=client_base_url
+    )
     for i in range(max_retries):
         try:
             if chat_history:
@@ -42,10 +54,19 @@ def ChatGPT_API_with_finish_reason(model, prompt, api_key=CHATGPT_API_KEY, chat_
                 messages=messages,
                 temperature=0,
             )
+            
+            # Extract token usage
+            usage = response.usage
+            token_usage = {
+                'prompt_tokens': usage.prompt_tokens,
+                'completion_tokens': usage.completion_tokens,
+                'total_tokens': usage.total_tokens
+            }
+            
             if response.choices[0].finish_reason == "length":
-                return response.choices[0].message.content, "max_output_reached"
+                return response.choices[0].message.content, "max_output_reached", token_usage
             else:
-                return response.choices[0].message.content, "finished"
+                return response.choices[0].message.content, "finished", token_usage
 
         except Exception as e:
             print('************* Retrying *************')
@@ -58,9 +79,17 @@ def ChatGPT_API_with_finish_reason(model, prompt, api_key=CHATGPT_API_KEY, chat_
 
 
 
-def ChatGPT_API(model, prompt, api_key=CHATGPT_API_KEY, chat_history=None):
+def ChatGPT_API(model, prompt, api_key=None, base_url=None, chat_history=None):
     max_retries = 10
-    client = openai.OpenAI(api_key=api_key)
+    
+    # Default to OpenAI if not specified
+    client_api_key = api_key or CHATGPT_API_KEY
+    client_base_url = base_url
+
+    client = OpenAI(
+        api_key=client_api_key,
+        base_url=client_base_url
+    )
     for i in range(max_retries):
         try:
             if chat_history:
@@ -74,8 +103,16 @@ def ChatGPT_API(model, prompt, api_key=CHATGPT_API_KEY, chat_history=None):
                 messages=messages,
                 temperature=0,
             )
+            
+            # Extract token usage
+            usage = response.usage
+            token_usage = {
+                'prompt_tokens': usage.prompt_tokens,
+                'completion_tokens': usage.completion_tokens,
+                'total_tokens': usage.total_tokens
+            }
    
-            return response.choices[0].message.content
+            return response.choices[0].message.content, token_usage
         except Exception as e:
             print('************* Retrying *************')
             logging.error(f"Error: {e}")
@@ -86,18 +123,35 @@ def ChatGPT_API(model, prompt, api_key=CHATGPT_API_KEY, chat_history=None):
                 return "Error"
             
 
-async def ChatGPT_API_async(model, prompt, api_key=CHATGPT_API_KEY):
+async def ChatGPT_API_async(model, prompt, api_key=None, base_url=None):
     max_retries = 10
     messages = [{"role": "user", "content": prompt}]
+    
+    # Default to OpenAI if not specified
+    client_api_key = api_key or CHATGPT_API_KEY
+    client_base_url = base_url
+
     for i in range(max_retries):
         try:
-            async with openai.AsyncOpenAI(api_key=api_key) as client:
+            async with AsyncOpenAI(
+                api_key=client_api_key,
+                base_url=client_base_url
+            ) as client:
                 response = await client.chat.completions.create(
                     model=model,
                     messages=messages,
                     temperature=0,
                 )
-                return response.choices[0].message.content
+                
+                # Extract token usage
+                usage = response.usage
+                token_usage = {
+                    'prompt_tokens': usage.prompt_tokens,
+                    'completion_tokens': usage.completion_tokens,
+                    'total_tokens': usage.total_tokens
+                }
+                
+                return response.choices[0].message.content, token_usage
         except Exception as e:
             print('************* Retrying *************')
             logging.error(f"Error: {e}")
@@ -602,20 +656,21 @@ def add_node_text_with_labels(node, pdf_pages):
     return
 
 
-async def generate_node_summary(node, model=None):
+async def generate_node_summary(node, model=None, api_key=None, base_url=None):
     prompt = f"""You are given a part of a document, your task is to generate a description of the partial document about what are main points covered in the partial document.
 
     Partial Document Text: {node['text']}
     
     Directly return the description, do not include any other text.
     """
-    response = await ChatGPT_API_async(model, prompt)
+    response, token_usage = await ChatGPT_API_async(model, prompt, api_key=api_key, base_url=base_url)
+    get_global_tracker().add_usage(token_usage['prompt_tokens'], token_usage['completion_tokens'], 'generate_node_summary')
     return response
 
 
-async def generate_summaries_for_structure(structure, model=None):
+async def generate_summaries_for_structure(structure, model=None, api_key=None, base_url=None):
     nodes = structure_to_list(structure)
-    tasks = [generate_node_summary(node, model=model) for node in nodes]
+    tasks = [generate_node_summary(node, model=model, api_key=api_key, base_url=base_url) for node in nodes]
     summaries = await asyncio.gather(*tasks)
     
     for node, summary in zip(nodes, summaries):
@@ -646,7 +701,7 @@ def create_clean_structure_for_description(structure):
         return structure
 
 
-def generate_doc_description(structure, model=None):
+def generate_doc_description(structure, model=None, api_key=None, base_url=None):
     prompt = f"""Your are an expert in generating descriptions for a document.
     You are given a structure of a document. Your task is to generate a one-sentence description for the document, which makes it easy to distinguish the document from other documents.
         
@@ -654,7 +709,8 @@ def generate_doc_description(structure, model=None):
     
     Directly return the description, do not include any other text.
     """
-    response = ChatGPT_API(model, prompt)
+    response, token_usage = ChatGPT_API(model, prompt, api_key=api_key, base_url=base_url)
+    get_global_tracker().add_usage(token_usage['prompt_tokens'], token_usage['completion_tokens'], 'generate_doc_description')
     return response
 
 
